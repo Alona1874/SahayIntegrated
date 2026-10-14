@@ -8,6 +8,7 @@ import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import java.util.Locale
 
 class SpeechCapture(
     private val context: Context
@@ -19,7 +20,13 @@ class SpeechCapture(
 
     var onError: ((String) -> Unit)? = null
 
+    var onErrorCode: ((Int, String) -> Unit)? = null
+
     var onListeningStarted: (() -> Unit)? = null
+
+    @Volatile
+    private var isListeningActive = false
+    val isListening: Boolean get() = isListeningActive
 
     private val mainHandler =
         Handler(Looper.getMainLooper())
@@ -51,7 +58,7 @@ class SpeechCapture(
                 override fun onReadyForSpeech(
                     params: Bundle?
                 ) {
-
+                    isListeningActive = true
                     mainHandler.post {
                         onListeningStarted?.invoke()
                     }
@@ -86,13 +93,10 @@ class SpeechCapture(
                         matches?.firstOrNull()
 
                     mainHandler.post {
-
+                        isListeningActive = false
                         if (!best.isNullOrBlank()) {
-
                             onResult?.invoke(best)
-
                         } else {
-
                             onError?.invoke(
                                 "No speech was recognized. Please try again."
                             )
@@ -103,10 +107,8 @@ class SpeechCapture(
                 override fun onError(
                     error: Int
                 ) {
-
                     val message =
                         when (error) {
-
                             SpeechRecognizer.ERROR_AUDIO ->
                                 "Microphone audio error."
 
@@ -151,7 +153,8 @@ class SpeechCapture(
                         }
 
                     mainHandler.post {
-
+                        isListeningActive = false
+                        onErrorCode?.invoke(error, message)
                         onError?.invoke(message)
                     }
                 }
@@ -204,19 +207,15 @@ class SpeechCapture(
                         RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
                     )
 
-                    /*
-                     * Use English (US) first because it is
-                     * widely supported by Android recognition
-                     * services.
-                     */
+                    val lang = Locale.getDefault().toLanguageTag().ifBlank { "en-US" }
                     putExtra(
                         RecognizerIntent.EXTRA_LANGUAGE,
-                        "en-US"
+                        lang
                     )
 
                     putExtra(
                         RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE,
-                        "en-US"
+                        lang
                     )
 
                     putExtra(
@@ -244,9 +243,8 @@ class SpeechCapture(
     }
 
     fun stopListening() {
-
+        isListeningActive = false
         mainHandler.post {
-
             try {
                 recognizer?.stopListening()
             } catch (_: Exception) {
@@ -255,9 +253,8 @@ class SpeechCapture(
     }
 
     fun cancelListening() {
-
+        isListeningActive = false
         mainHandler.post {
-
             try {
                 recognizer?.cancel()
             } catch (_: Exception) {
@@ -266,9 +263,8 @@ class SpeechCapture(
     }
 
     fun destroy() {
-
+        isListeningActive = false
         mainHandler.post {
-
             try {
                 recognizer?.destroy()
             } catch (_: Exception) {

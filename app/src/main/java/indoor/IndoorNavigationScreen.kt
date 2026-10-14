@@ -3,22 +3,33 @@ package com.example.pathfinderindoor.indoor
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
+import android.speech.SpeechRecognizer
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
-import java.util.Locale
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.pathfinderindoor.hazard.HazardDetector
+import com.example.pathfinderindoor.hazard.HazardListener
+import com.example.pathfinderindoor.voice.VoiceManager
 
 private const val PREFS_NAME = "pathfinder_indoor_routes"
 
@@ -31,25 +42,14 @@ private enum class VoiceMode {
 }
 
 private fun listSavedRoutes(context: Context): List<String> {
-    val prefs = context.getSharedPreferences(
-        PREFS_NAME,
-        Context.MODE_PRIVATE
-    )
-
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     return (prefs.getString("route_names", "") ?: "")
         .split("|")
         .filter { it.isNotBlank() }
 }
 
-private fun saveRoute(
-    context: Context,
-    route: Route
-) {
-    val prefs = context.getSharedPreferences(
-        PREFS_NAME,
-        Context.MODE_PRIVATE
-    )
-
+private fun saveRoute(context: Context, route: Route) {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     val names = listSavedRoutes(context).toMutableList()
 
     if (!names.contains(route.destinationName)) {
@@ -58,28 +58,13 @@ private fun saveRoute(
 
     prefs.edit()
         .putString("route_names", names.joinToString("|"))
-        .putString(
-            "route_${route.destinationName}",
-            route.toJson()
-        )
+        .putString("route_${route.destinationName}", route.toJson())
         .apply()
 }
 
-private fun loadRoute(
-    context: Context,
-    destinationName: String
-): Route? {
-
-    val prefs = context.getSharedPreferences(
-        PREFS_NAME,
-        Context.MODE_PRIVATE
-    )
-
-    val json = prefs.getString(
-        "route_$destinationName",
-        null
-    ) ?: return null
-
+private fun loadRoute(context: Context, destinationName: String): Route? {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    val json = prefs.getString("route_$destinationName", null) ?: return null
     return try {
         routeFromJson(json)
     } catch (e: Exception) {
@@ -87,445 +72,188 @@ private fun loadRoute(
     }
 }
 
-private fun findSavedRoute(
-    context: Context,
-    destination: String
-): Route? {
-
-    val target = destination
-        .lowercase()
-        .trim()
-
+private fun findSavedRoute(context: Context, destination: String): Route? {
+    val target = destination.lowercase().trim()
     for (name in listSavedRoutes(context)) {
-
-        val saved = name
-            .lowercase()
-            .trim()
-
-        if (
-            saved == target ||
-            saved.contains(target) ||
-            target.contains(saved)
-        ) {
+        val saved = name.lowercase().trim()
+        if (saved == target || saved.contains(target) || target.contains(saved)) {
             return loadRoute(context, name)
         }
     }
-
     return null
 }
 
-private fun extractDestination(
-    speech: String
-): String {
-
-    var text = speech
-        .lowercase()
-        .trim()
-        .replace(Regex("\\s+"), " ")
-
-    val patterns = listOf(
-        Regex("^take me to\\s+(.+)$"),
-        Regex("^guide me to\\s+(.+)$"),
-        Regex("^i want to go to\\s+(.+)$"),
-        Regex("^i need to go to\\s+(.+)$"),
-        Regex("^i need to reach\\s+(.+)$"),
-        Regex("^i want to reach\\s+(.+)$"),
-        Regex("^i am going to\\s+(.+)$"),
-        Regex("^i'm going to\\s+(.+)$"),
-        Regex("^go to\\s+(.+)$"),
-        Regex("^navigate to\\s+(.+)$"),
-        Regex("^take me\\s+(.+)$"),
-        Regex("^i want\\s+(.+)$")
-    )
-
-    for (pattern in patterns) {
-
-        val match = pattern.find(text)
-
-        if (match != null) {
-            text = match.groupValues[1].trim()
-            break
-        }
-    }
-
-    return text
-        .trim()
-        .trimEnd('.', ',', '!', '?')
-}
-
-private fun isYes(text: String): Boolean {
-    return Regex(
-        "\\b(yes|yeah|yep|yup|sure|okay|ok|correct|right)\\b"
-    ).containsMatchIn(text)
-}
-
-private fun isNo(text: String): Boolean {
-    return Regex(
-        "\\b(no|nope|wrong|not correct|that's wrong|that is wrong)\\b"
-    ).containsMatchIn(text)
-}
-
-private fun wantsToSave(text: String): Boolean {
-    return Regex(
-        "\\b(save|save it|please save)\\b"
-    ).containsMatchIn(text)
-}
-
-private fun doesNotWantToSave(text: String): Boolean {
-    return Regex(
-        "\\b(don't save|do not save|no|nope|don't|do not)\\b"
-    ).containsMatchIn(text)
-}
-
 @Composable
-fun IndoorNavigationScreen() {
-
+fun IndoorNavigationScreen(
+    voiceManager: VoiceManager,
+    initialDestination: String? = null,
+    onExit: (() -> Unit)? = null
+) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
 
-    var destinationName by remember {
-        mutableStateOf("")
-    }
+    var destinationName by remember { mutableStateOf(initialDestination?.trim() ?: "") }
+    var transcript by remember { mutableStateOf("") }
+    var parsedSteps by remember { mutableStateOf<List<Step>>(emptyList()) }
+    var currentPrompt by remember { mutableStateOf("Starting indoor voice navigation...") }
+    var statusMessage by remember { mutableStateOf("") }
+    var isWalking by remember { mutableStateOf(false) }
+    var voiceMode by remember { mutableStateOf(VoiceMode.IDLE) }
+    var savedRouteCandidate by remember { mutableStateOf<Route?>(null) }
+    var hazardAlert by remember { mutableStateOf("") }
+    var hazardBoxesBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var currentStepDisplay by remember { mutableStateOf("") }
 
-    var transcript by remember {
-        mutableStateOf("")
-    }
+    val pdr = remember { PdrEngine(context) }
+    val executor = remember { StepExecutor(pdr) }
+    val previewView = remember { PreviewView(context) }
 
-    var parsedSteps by remember {
-        mutableStateOf<List<Step>>(emptyList())
-    }
-
-    var currentPrompt by remember {
-        mutableStateOf("Starting voice navigation...")
-    }
-
-    var statusMessage by remember {
-        mutableStateOf("")
-    }
-
-    var isWalking by remember {
-        mutableStateOf(false)
-    }
-
-    var voiceMode by remember {
-        mutableStateOf(VoiceMode.IDLE)
-    }
-
-    var savedRouteCandidate by remember {
-        mutableStateOf<Route?>(null)
-    }
-
-    var ttsReady by remember {
-        mutableStateOf(false)
-    }
-
-    val pdr = remember {
-        PdrEngine(context)
-    }
-
-    val executor = remember {
-        StepExecutor(pdr)
-    }
-
-    /*
-     * Text-to-speech
-     */
-    val tts = remember {
-
-        TextToSpeech(context) { status ->
-
-            Handler(Looper.getMainLooper()).post {
-
-                if (status == TextToSpeech.SUCCESS) {
-
-                    ttsReady = true
-                }
-            }
-        }
-    }
-
-    /*
-     * Microphone permission
-     */
     fun hasMicrophonePermission(): Boolean {
-
         return ContextCompat.checkSelfPermission(
             context,
             Manifest.permission.RECORD_AUDIO
         ) == PackageManager.PERMISSION_GRANTED
     }
 
-    /*
-     * Speech recognition
-     */
+    fun hasCameraPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    // Hazard Detector setup
+    val hazardDetector = remember {
+        HazardDetector(
+            context = context,
+            lifecycleOwner = lifecycleOwner,
+            viewFinder = previewView,
+            listener = object : HazardListener {
+                override fun onHazardDetected(label: String, distanceLevel: String, isUrgent: Boolean) {
+                    val alertText = if (isUrgent) "Warning: $label $distanceLevel!" else "$label $distanceLevel"
+                    hazardAlert = alertText
+                    if (isUrgent) {
+                        voiceManager.speakUrgent(alertText)
+                    } else {
+                        voiceManager.speak(alertText)
+                    }
+                }
+
+                override fun onBoxesUpdated(bitmap: Bitmap) {
+                    hazardBoxesBitmap = bitmap
+                }
+            }
+        )
+    }
+
+    // Speech Capture setup
     val speechCapture = remember {
-
         SpeechCapture(context).apply {
-
             onListeningStarted = {
-
                 statusMessage = "Listening..."
             }
-
             onError = { message ->
-
                 statusMessage = message
             }
         }
     }
 
-    /*
-     * Start listening.
-     *
-     * Handler guarantees this runs on Android's main thread.
-     */
     fun listen() {
-
         Handler(Looper.getMainLooper()).post {
-
             if (!hasMicrophonePermission()) {
-
-                statusMessage =
-                    "Microphone permission is required."
-
+                statusMessage = "Microphone permission is required."
                 return@post
             }
-
             statusMessage = "Listening..."
-
             speechCapture.startListening()
         }
     }
 
-    /*
-     * Speak first.
-     * When speech finishes, automatically start listening.
-     */
-    fun speak(
-        text: String,
-        afterSpeech: (() -> Unit)? = null
-    ) {
-
+    fun speak(text: String, afterSpeech: (() -> Unit)? = null) {
         currentPrompt = text
-
-        if (!ttsReady) {
-
-            Handler(Looper.getMainLooper()).postDelayed({
-
-                afterSpeech?.invoke()
-
-            }, 500)
-
-            return
-        }
-
-        val utteranceId =
-            "navigation_${System.currentTimeMillis()}"
-
-        tts.setOnUtteranceProgressListener(
-            object : UtteranceProgressListener() {
-
-                override fun onStart(
-                    utteranceId: String?
-                ) {
-                }
-
-                override fun onDone(
-                    utteranceId: String?
-                ) {
-
-                    Handler(
-                        Looper.getMainLooper()
-                    ).post {
-
-                        afterSpeech?.invoke()
-                    }
-                }
-
-                override fun onError(
-                    utteranceId: String?
-                ) {
-
-                    Handler(
-                        Looper.getMainLooper()
-                    ).post {
-
-                        afterSpeech?.invoke()
-                    }
-                }
-            }
-        )
-
-        tts.speak(
-            text,
-            TextToSpeech.QUEUE_FLUSH,
-            null,
-            utteranceId
-        )
+        voiceManager.speak(text, afterSpeech)
     }
 
-    /*
-     * Start navigation.
-     */
     fun startRoute(route: Route) {
-
         parsedSteps = route.steps
-
         isWalking = true
-
         voiceMode = VoiceMode.IDLE
 
         executor.onPrompt = { message ->
-
+            currentStepDisplay = message
             speak(message)
         }
 
         executor.onRouteComplete = {
-
             isWalking = false
-
-            voiceMode =
-                VoiceMode.SAVE_CONFIRMATION
-
-            speak(
-                "You have arrived at $destinationName. " +
-                        "Would you like to save this route? " +
-                        "Please say save or no."
-            ) {
-
+            hazardDetector.stop()
+            voiceMode = VoiceMode.SAVE_CONFIRMATION
+            val completionMsg = "You have arrived at $destinationName. Would you like to save this route? Please say save or no."
+            speak(completionMsg) {
                 listen()
             }
+        }
+
+        // Start hazard detection alongside walking if camera permission is available
+        if (hasCameraPermission()) {
+            try {
+                hazardDetector.start()
+            } catch (_: Exception) {}
         }
 
         executor.start(route.steps)
     }
 
-    /*
-     * Process destination.
-     */
-    fun processDestination(
-        speech: String
-    ) {
-
-        val destination =
-            extractDestination(speech)
-
+    fun processDestination(speech: String) {
+        val destination = SpeechIntentParser.extractDestination(speech)
         if (destination.isBlank()) {
-
-            voiceMode =
-                VoiceMode.DESTINATION
-
-            speak(
-                "I could not identify your destination. " +
-                        "Please tell me where you would like to go."
-            ) {
-
+            voiceMode = VoiceMode.DESTINATION
+            speak("I could not identify your destination. Please tell me where you would like to go.") {
                 listen()
             }
-
             return
         }
 
-        destinationName =
-            destination
+        destinationName = destination
+        val savedRoute = findSavedRoute(context, destination)
+        savedRouteCandidate = savedRoute
 
-        val saved =
-            findSavedRoute(
-                context,
-                destination
-            )
-
-        if (saved != null) {
-
-            savedRouteCandidate =
-                saved
-
-            voiceMode =
-                VoiceMode.SAVED_ROUTE_CONFIRMATION
-
-            speak(
-                "I found a saved route to " +
-                        "${saved.destinationName}. " +
-                        "Would you like to use this route? " +
-                        "Please say yes or no."
-            ) {
-
+        if (savedRoute != null) {
+            voiceMode = VoiceMode.SAVED_ROUTE_CONFIRMATION
+            speak("I found a saved route to $destination. Would you like to use it? Please say yes or no.") {
                 listen()
             }
-
         } else {
-
-            voiceMode =
-                VoiceMode.DIRECTIONS
-
-            speak(
-                "I do not have a saved route to " +
-                        "$destination. " +
-                        "Please ask someone nearby for directions. " +
-                        "When they are ready, I will listen."
-            ) {
-
+            voiceMode = VoiceMode.DIRECTIONS
+            speak("I do not have a saved route to $destination. Please ask someone nearby for directions. When they are ready, I will listen.") {
                 listen()
             }
         }
     }
 
-    /*
-     * Process YES / NO / SAVE responses and spoken directions.
-     */
-    fun processCommand(
-        speech: String
-    ) {
-
-        val text =
-            speech.lowercase().trim()
+    fun processCommand(speech: String) {
+        val text = speech.lowercase().trim()
 
         when (voiceMode) {
-
             VoiceMode.SAVED_ROUTE_CONFIRMATION -> {
-
                 when {
-
-                    isYes(text) -> {
-
-                        val route =
-                            savedRouteCandidate
-
-                        voiceMode =
-                            VoiceMode.IDLE
-
+                    SpeechIntentParser.isYes(text) -> {
+                        val route = savedRouteCandidate
+                        voiceMode = VoiceMode.IDLE
                         if (route != null) {
-
-                            speak(
-                                "Okay. Starting the saved route to " +
-                                        route.destinationName + "."
-                            ) {
-
+                            speak("Okay. Starting the saved route to ${route.destinationName}.") {
                                 startRoute(route)
                             }
                         }
                     }
-
-                    isNo(text) -> {
-
-                        voiceMode =
-                            VoiceMode.DIRECTIONS
-
-                        speak(
-                            "Okay. Please ask someone nearby for directions. " +
-                                    "I will listen."
-                        ) {
-
+                    SpeechIntentParser.isNo(text) -> {
+                        voiceMode = VoiceMode.DIRECTIONS
+                        speak("Okay. Please ask someone nearby for directions. I will listen.") {
                             listen()
                         }
                     }
-
                     else -> {
-
-                        speak(
-                            "I did not understand. " +
-                                    "Please say yes or no."
-                        ) {
-
+                        speak("I did not understand. Please say yes or no.") {
                             listen()
                         }
                     }
@@ -533,44 +261,18 @@ fun IndoorNavigationScreen() {
             }
 
             VoiceMode.SAVE_CONFIRMATION -> {
-
                 when {
-
-                    wantsToSave(text) -> {
-
-                        saveRoute(
-                            context,
-                            Route(
-                                destinationName,
-                                parsedSteps
-                            )
-                        )
-
-                        voiceMode =
-                            VoiceMode.IDLE
-
-                        speak(
-                            "Route saved successfully."
-                        )
+                    SpeechIntentParser.wantsToSave(text) -> {
+                        saveRoute(context, Route(destinationName, parsedSteps))
+                        voiceMode = VoiceMode.IDLE
+                        speak("Route saved successfully.")
                     }
-
-                    doesNotWantToSave(text) -> {
-
-                        voiceMode =
-                            VoiceMode.IDLE
-
-                        speak(
-                            "Okay. The route was not saved."
-                        )
+                    SpeechIntentParser.doesNotWantToSave(text) -> {
+                        voiceMode = VoiceMode.IDLE
+                        speak("Okay. The route was not saved.")
                     }
-
                     else -> {
-
-                        speak(
-                            "Please say save if you want to save the route, " +
-                                    "or say no if you do not."
-                        ) {
-
+                        speak("Please say save if you want to save the route, or say no if you do not.") {
                             listen()
                         }
                     }
@@ -578,274 +280,257 @@ fun IndoorNavigationScreen() {
             }
 
             VoiceMode.DIRECTIONS -> {
-
-                val steps =
-                    DirectionsParser.parse(speech)
-
+                val steps = DirectionsParser.parse(speech)
                 if (steps.isEmpty()) {
-
-                    speak(
-                        "I could not understand those directions. " +
-                                "Please say them again."
-                    ) {
-
+                    speak("I could not understand those directions. Please say them again.") {
                         listen()
                     }
-
                 } else {
-
-                    parsedSteps =
-                        steps
-
-                    voiceMode =
-                        VoiceMode.IDLE
-
-                    speak(
-                        "I understood the directions. " +
-                                "Starting navigation now."
-                    ) {
-
-                        startRoute(
-                            Route(
-                                destinationName,
-                                steps
-                            )
-                        )
+                    parsedSteps = steps
+                    voiceMode = VoiceMode.IDLE
+                    speak("I understood the directions. Starting navigation now.") {
+                        startRoute(Route(destinationName, steps))
                     }
                 }
             }
 
-            else -> {
+            VoiceMode.IDLE -> {
+                // If walking, check if user said landmark confirmation
+                if (isWalking && SpeechIntentParser.isLandmarkReached(text)) {
+                    executor.confirmLandmarkReached()
+                }
             }
+
+            else -> {}
         }
     }
 
-    /*
-     * Connect speech results to current voice mode.
-     */
+    // Connect speech recognition results
     LaunchedEffect(voiceMode) {
-
         speechCapture.onResult = { text ->
-
             transcript = text
-
-            statusMessage =
-                "Heard: $text"
+            statusMessage = "Heard: $text"
 
             when (voiceMode) {
-
-                VoiceMode.DESTINATION -> {
-
-                    processDestination(text)
-                }
-
-                VoiceMode.SAVED_ROUTE_CONFIRMATION -> {
-
-                    processCommand(text)
-                }
-
-                VoiceMode.DIRECTIONS -> {
-
-                    processCommand(text)
-                }
-
-                VoiceMode.SAVE_CONFIRMATION -> {
-
-                    processCommand(text)
-                }
-
+                VoiceMode.DESTINATION -> processDestination(text)
+                VoiceMode.SAVED_ROUTE_CONFIRMATION,
+                VoiceMode.DIRECTIONS,
+                VoiceMode.SAVE_CONFIRMATION -> processCommand(text)
                 VoiceMode.IDLE -> {
+                    if (isWalking && SpeechIntentParser.isLandmarkReached(text)) {
+                        executor.confirmLandmarkReached()
+                    }
+                }
+            }
+        }
+
+        speechCapture.onErrorCode = { code, _ ->
+            // If user did not speak or speech timed out, prompt gently rather than freezing
+            if (code == SpeechRecognizer.ERROR_SPEECH_TIMEOUT || code == SpeechRecognizer.ERROR_NO_MATCH) {
+                if (voiceMode != VoiceMode.IDLE && !isWalking) {
+                    speak("I didn't hear you clearly. Please say again.") {
+                        listen()
+                    }
                 }
             }
         }
     }
 
-    /*
-     * Permission launcher.
-     */
-    val permissionLauncher =
-        rememberLauncherForActivityResult(
-            ActivityResultContracts.RequestPermission()
-        ) { granted ->
-
-            if (granted) {
-
-                voiceMode =
-                    VoiceMode.DESTINATION
-
-                speak(
-                    "Where would you like to go?"
-                ) {
-
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            if (initialDestination.isNullOrBlank()) {
+                voiceMode = VoiceMode.DESTINATION
+                speak("Where would you like to go?") {
                     listen()
                 }
-
             } else {
-
-                statusMessage =
-                    "Microphone permission is required."
+                processDestination(initialDestination)
             }
-        }
-
-    /*
-     * Start the application.
-     */
-    LaunchedEffect(ttsReady) {
-
-        if (ttsReady) {
-
-            if (hasMicrophonePermission()) {
-
-                voiceMode =
-                    VoiceMode.DESTINATION
-
-                speak(
-                    "Where would you like to go?"
-                ) {
-
-                    listen()
-                }
-
-            } else {
-
-                permissionLauncher.launch(
-                    Manifest.permission.RECORD_AUDIO
-                )
-            }
+        } else {
+            statusMessage = "Microphone permission is required."
         }
     }
 
-    /*
-     * Cleanup.
-     */
+    // Start flow
+    LaunchedEffect(Unit) {
+        if (hasMicrophonePermission()) {
+            if (initialDestination.isNullOrBlank()) {
+                voiceMode = VoiceMode.DESTINATION
+                speak("Where would you like to go?") {
+                    listen()
+                }
+            } else {
+                processDestination(initialDestination)
+            }
+        } else {
+            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    // Cleanup on screen exit
     DisposableEffect(Unit) {
-
         onDispose {
-
             executor.stop()
-
             speechCapture.destroy()
-
             pdr.stop()
-
-            tts.stop()
-
-            tts.shutdown()
+            try {
+                hazardDetector.stop()
+            } catch (_: Exception) {}
         }
     }
 
-    /*
-     * Debug/testing UI.
-     *
-     * The navigation itself is voice-first.
-     */
     Column(
-        modifier =
-            Modifier
-                .fillMaxSize()
-                .padding(16.dp),
-
-        verticalArrangement =
-            Arrangement.spacedBy(12.dp)
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Indoor Navigation",
+                style = MaterialTheme.typography.headlineSmall
+            )
 
-        Text(
-            text = "Indoor Navigation",
-            style =
-                MaterialTheme.typography.headlineSmall
-        )
-
-        Text(
-            text = "Voice-first navigation",
-            style =
-                MaterialTheme.typography.titleMedium
-        )
+            if (onExit != null) {
+                OutlinedButton(onClick = {
+                    executor.stop()
+                    pdr.stop()
+                    try { hazardDetector.stop() } catch (_: Exception) {}
+                    onExit()
+                }) {
+                    Text("Exit")
+                }
+            }
+        }
 
         Text(
             text = currentPrompt,
-            style =
-                MaterialTheme.typography.bodyLarge
+            style = MaterialTheme.typography.bodyLarge
         )
 
         if (destinationName.isNotBlank()) {
-
             Text(
-                text = "Destination: $destinationName"
+                text = "Destination: $destinationName",
+                style = MaterialTheme.typography.titleMedium
             )
         }
 
         if (transcript.isNotBlank()) {
-
             Text(
-                text = "Heard: \"$transcript\""
+                text = "Heard: \"$transcript\"",
+                style = MaterialTheme.typography.bodyMedium
             )
         }
 
         if (statusMessage.isNotBlank()) {
-
             Text(
                 text = statusMessage,
-                style =
-                    MaterialTheme.typography.bodySmall
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+
+        // Camera Preview for Hazard Detection (shown when walking)
+        if (isWalking && hasCameraPermission()) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(180.dp),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    AndroidView(
+                        factory = { previewView },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    hazardBoxesBitmap?.let { bitmap ->
+                        Image(
+                            bitmap = bitmap.asImageBitmap(),
+                            contentDescription = "Hazard Boxes",
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                    if (hazardAlert.isNotBlank()) {
+                        Text(
+                            text = hazardAlert,
+                            color = Color.Yellow,
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .background(Color.Black.copy(alpha = 0.7f))
+                                .padding(6.dp),
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
+                }
+            }
+        }
+
+        if (currentStepDisplay.isNotBlank()) {
+            Text(
+                text = "Current Step: $currentStepDisplay",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.secondary
             )
         }
 
         if (parsedSteps.isNotEmpty()) {
-
             Text(
-                text = "Navigation steps:",
-                style =
-                    MaterialTheme.typography.titleMedium
+                text = "Navigation steps (${parsedSteps.size}):",
+                style = MaterialTheme.typography.titleMedium
             )
 
             LazyColumn(
-                modifier =
-                    Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-
                 items(parsedSteps) { step ->
-
-                    Text(
-                        text = "• $step"
-                    )
+                    Text(text = "• $step")
                 }
             }
-
         } else {
-
-            Spacer(
-                modifier =
-                    Modifier.weight(1f)
-            )
+            Spacer(modifier = Modifier.weight(1f))
         }
 
-        /*
-         * Emergency/testing stop button.
-         * Normal navigation does not require it.
-         */
+        // Landmark confirmation button if walking and current step is landmark-based
         if (isWalking) {
+            Button(
+                onClick = { executor.confirmLandmarkReached() },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("I've Reached Landmark / Continue")
+            }
 
             Button(
                 onClick = {
-
                     executor.stop()
-
-                    isWalking =
-                        false
-
-                    voiceMode =
-                        VoiceMode.IDLE
-
-                    speak(
-                        "Navigation stopped."
-                    )
+                    pdr.stop()
+                    try { hazardDetector.stop() } catch (_: Exception) {}
+                    isWalking = false
+                    voiceMode = VoiceMode.IDLE
+                    speak("Navigation stopped.")
                 },
-
-                modifier =
-                    Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
             ) {
-
                 Text("Stop Navigation")
+            }
+        } else if (voiceMode == VoiceMode.IDLE && parsedSteps.isEmpty()) {
+            Button(
+                onClick = {
+                    voiceMode = VoiceMode.DESTINATION
+                    speak("Where would you like to go?") {
+                        listen()
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("🎤 Speak Destination")
             }
         }
     }
