@@ -71,6 +71,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        // Start battery monitoring when Sahay launches.
+        // BatteryMonitorService.start(this)
+        BatteryMonitorService.start(this)
+
         voiceManager = VoiceManager(this)
 
         setContent {
@@ -682,6 +686,11 @@ fun SahayVoiceAssistantApp(voiceManager: VoiceManager) {
         )
 
         Spacer(modifier = Modifier.height(14.dp))
+
+        // Open the emergency contacts and SOS screen
+        EmergencyAccessButton()
+
+        Spacer(modifier = Modifier.height(10.dp))
 
         // Accessible Fallback Action Buttons (strictly secondary to voice)
         Row(

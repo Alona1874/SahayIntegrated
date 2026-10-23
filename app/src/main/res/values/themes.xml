@@ -2,4 +2,5 @@
 <resources>
 
     <style name="Theme.PathfinderIndoor" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.SahayEmergency" parent="Theme.AppCompat.Light.NoActionBar" />
 </resources>
